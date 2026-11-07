@@ -1,0 +1,67 @@
+name: Budapest job aggregator
+
+on:
+  schedule:
+    - cron: "0 */8 * * *" # 00:00, 08:00, 16:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print Discord payloads instead of posting (state is not written)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write # required for AWS OIDC
+
+concurrency:
+  group: job-aggregator
+  cancel-in-progress: false
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install headless Chromium (for crawl4ai)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-central-1' }}
+
+      - name: Run pipeline
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
+          STATE_BACKEND: dynamodb
+          DYNAMODB_TABLE: job_scraper_state
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+          MATCH_THRESHOLD: "65"
+          MAX_JOBS_PER_RUN: "40"
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          SOURCES: careers
+          CRAWL4AI_NO_CLOUD_NOTICE: "1"
+        run: python -m job_aggregator.main
