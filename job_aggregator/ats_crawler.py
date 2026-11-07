@@ -101,6 +101,12 @@ FALLBACK_WAIT = {"wait_until": "domcontentloaded", "delay_before_return_html": 8
 
 MAX_DESCRIPTION_CHARS = 15_000
 
+# Groq's free tier caps tokens per minute per model (8,000 for openai/gpt-oss-120b) and rejects any
+# single request whose input + max_tokens exceeds it ("Request too large"), with no retry possible.
+# ~3,000 chunk tokens + the extraction prompt + 2,000 output tokens keeps each request near 6,000.
+EXTRACTION_CHUNK_TOKENS = 3000
+EXTRACTION_MAX_OUTPUT_TOKENS = 2000
+
 
 class ExtractedJob(BaseModel):
     title: str
@@ -237,22 +243,29 @@ def _listing_run_config(strategy: LLMExtractionStrategy | None) -> CrawlerRunCon
 def build_llm_strategy(api_key: str | None = None, model: str | None = None) -> LLMExtractionStrategy:
     """crawl4ai calls the LLM through litellm; "groq/<model>" routes to the Groq API directly."""
     model = model or os.getenv("GROQ_MODEL") or DEFAULT_GROQ_MODEL
+    extra_args: dict = {"temperature": 0, "max_tokens": EXTRACTION_MAX_OUTPUT_TOKENS}
+    if model.startswith("openai/gpt-oss"):
+        # gpt-oss spends output tokens on reasoning first; listing links needs little of it.
+        extra_args["reasoning_effort"] = "low"
     return LLMExtractionStrategy(
         llm_config=LLMConfig(
             provider=f"groq/{model}",
             api_token=api_key or os.getenv("GROQ_API_KEY"),
-            backoff_max_attempts=3,
+            # crawl4ai sends Groq chunks one after another; a chunk that hits the per-minute token
+            # limit waits 15 s, 30 s, then 60 s, long enough for the TPM window to free up.
+            backoff_base_delay=15,
+            backoff_max_attempts=4,
+            backoff_exponential_factor=2,
         ),
         schema=ExtractedJob.model_json_schema(),
         extraction_type="schema",
         instruction=EXTRACTION_INSTRUCTION,
         # Full page Markdown: the pruned "fit" Markdown tends to drop job-title links on listing pages.
         input_format="markdown",
-        # Large chunks = fewer LLM calls per page (free-tier request limits matter more than tokens).
-        chunk_token_threshold=6000,
+        chunk_token_threshold=EXTRACTION_CHUNK_TOKENS,
         overlap_rate=0.05,
         apply_chunking=True,
-        extra_args={"temperature": 0, "max_tokens": 4000},
+        extra_args=extra_args,
         verbose=False,
     )
 

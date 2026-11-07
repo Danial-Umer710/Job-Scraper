@@ -566,3 +566,15 @@ def test_extraction_strategy_uses_groq_provider(monkeypatch):
     strategy = build_llm_strategy()
     assert strategy.llm_config.provider == "groq/llama-3.3-70b-versatile"
     assert strategy.llm_config.api_token == "env-key"
+
+
+def test_extraction_requests_fit_groq_free_tier(monkeypatch):
+    """input chunk + output budget must stay well under the smallest free-tier TPM (8,000)."""
+    from job_aggregator.ats_crawler import build_llm_strategy
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    strategy = build_llm_strategy(model="openai/gpt-oss-120b")
+    assert strategy.chunk_token_threshold + strategy.extra_args["max_tokens"] <= 6000
+    assert strategy.extra_args["reasoning_effort"] == "low"
+    assert strategy.llm_config.backoff_base_delay >= 15
+    assert "reasoning_effort" not in build_llm_strategy(model="llama-3.3-70b-versatile").extra_args
