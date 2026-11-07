@@ -53,7 +53,7 @@ budapest-job-aggregator/
 - **Pages that never finish loading** (IBM, for example) are retried with a lighter "page loaded" wait instead of waiting for the network to go quiet.
 - **One broken site doesn't stop the run.** A page that errors or returns HTTP 4xx is logged and skipped.
 - **Only the first page of results is read.** Most sites show 10–25 jobs per page, and pagination isn't followed.
-- **Free-tier usage:** each run makes about 1–2 LLM calls per LLM-extracted career page, plus one call per new job scored. Groq's free tier for `llama-3.3-70b-versatile` allows 30 requests and about 12,000 tokens per minute, plus daily request and token caps.
+- **Free-tier usage:** each run makes about 1–2 LLM calls per LLM-extracted career page, plus one call per new job scored. Groq's free tier caps requests and tokens per minute and per day for each model. The current numbers are on Groq's rate-limits page.
   - `LLM_MIN_SECONDS_BETWEEN_CALLS` (default 2 s) keeps scoring at the 30-requests-per-minute limit, and `MAX_JOBS_PER_RUN` caps scoring calls per run.
   - A scoring call uses roughly 2,000–4,000 tokens, so the per-minute token limit is usually hit before the request limit. Those 429s are retried after the wait Groq asks for.
   - If a daily cap runs out, the run stops cleanly and the remaining jobs wait for the next run.
@@ -64,7 +64,7 @@ budapest-job-aggregator/
 
 - **Scoring:** uses the official `openai` Python SDK pointed at Groq's OpenAI compatibility endpoint (`https://api.groq.com/openai/v1`).
 - **Link extraction:** crawl4ai calls Groq through litellm, using the provider string `groq/<model>`.
-- **Model:** the default is `llama-3.3-70b-versatile`, used for both scoring and link extraction. To use another model, set `GROQ_MODEL`. The models your key can use are listed at `https://api.groq.com/openai/v1/models`.
+- **Model:** the default is `openai/gpt-oss-120b` (`DEFAULT_GROQ_MODEL` in `config.py`), used for both scoring and link extraction. To use another model, set `GROQ_MODEL`. The models your key can use are listed at `https://api.groq.com/openai/v1/models`.
 - **Output:** scoring requests use JSON mode, and every response is checked against `MatchResult`. Invalid output, including Groq's `json_validate_failed` error, is retried.
 - **Errors that stop the run:** a missing or invalid `GROQ_API_KEY`, an unknown model, or an exhausted daily cap ends the run with exit code `2`, instead of failing every job.
 
@@ -106,7 +106,7 @@ If you use Option B, GitHub Actions needs credentials:
 | Secret   | `DISCORD_WEBHOOK_URL` | Channel → Integrations → Webhooks       |
 | Secret   | `AWS_ROLE_ARN`        | Terraform output                        |
 | Variable | `AWS_REGION`          | Optional, default `eu-central-1`        |
-| Variable | `GROQ_MODEL`          | Optional, default `llama-3.3-70b-versatile` |
+| Variable | `GROQ_MODEL`          | Optional, default `openai/gpt-oss-120b` |
 
 To trigger a run by hand, go to **Actions → Budapest job aggregator → Run workflow**. Tick `dry_run` to see the Discord payloads in the log instead of posting them.
 

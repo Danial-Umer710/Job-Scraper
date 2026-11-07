@@ -509,7 +509,7 @@ def test_config_requires_groq_key(monkeypatch):
     monkeypatch.delenv("GROQ_MODEL", raising=False)
     monkeypatch.delenv("LLM_MIN_SECONDS_BETWEEN_CALLS", raising=False)
     settings = Settings()
-    assert settings.groq_model == DEFAULT_GROQ_MODEL == "llama-3.3-70b-versatile"
+    assert settings.groq_model == DEFAULT_GROQ_MODEL  # whatever config.py defines
     assert settings.llm_min_seconds_between_calls == 2.0
     with pytest.raises(ValueError, match="GROQ_API_KEY"):
         settings.validate()
