@@ -12,11 +12,17 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required for AWS OIDC
+  # Add "id-token: write" here when switching to DynamoDB (needed for AWS OIDC).
 
 concurrency:
   group: job-aggregator
   cancel-in-progress: false
+
+env:
+  # Processed-job state (what has already been scored/alerted) is a JSON file kept between runs
+  # with the Actions cache, so no AWS is needed. Cache entries unused for 7 days are evicted;
+  # with a run every 8 hours that never happens. See README "State without AWS" to move to DynamoDB.
+  STATE_FILE: .state/processed_jobs.json
 
 jobs:
   run-pipeline:
@@ -45,23 +51,35 @@ jobs:
       - name: Unit tests
         run: pytest -q
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v6
+      # Cache entries are immutable, so each run saves a new key and the next run restores
+      # the most recent one through the prefix in restore-keys.
+      - name: Restore processed-job state
+        uses: actions/cache/restore@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'eu-central-1' }}
+          path: ${{ env.STATE_FILE }}
+          key: job-state-${{ github.run_id }}
+          restore-keys: job-state-
 
       - name: Run pipeline
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL }}  # empty -> DEFAULT_GROQ_MODEL in config.py
-          STATE_BACKEND: dynamodb
-          DYNAMODB_TABLE: job_scraper_state
-          AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+          STATE_BACKEND: local
+          LOCAL_STATE_PATH: ${{ env.STATE_FILE }}
           MATCH_THRESHOLD: "65"
           MAX_JOBS_PER_RUN: "40"
           DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
           SOURCES: careers
           CRAWL4AI_NO_CLOUD_NOTICE: "1"
         run: python -m job_aggregator.main
+
+      # Saved even when the pipeline exits non-zero (e.g. one Discord batch failed), so jobs that
+      # were already alerted are not sent again. Skipped when nothing was written (dry run, first
+      # run with no new jobs).
+      - name: Save processed-job state
+        if: always() && hashFiles(env.STATE_FILE) != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.STATE_FILE }}
+          key: job-state-${{ github.run_id }}

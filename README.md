@@ -4,7 +4,7 @@ A serverless ETL pipeline that runs every 8 hours on GitHub Actions. It:
 
 1. Crawls company career pages (`CAREER_PAGE_URLS` in `config.py`) with **crawl4ai** in headless Chromium. An LLM on Groq extracts the tech job titles and links from each page.
 2. Normalizes each role into a Pydantic `JobPosting`, and drops clearly senior or manager titles before any further work.
-3. Skips roles already stored in DynamoDB (`job_scraper_state`), then fetches the job page **only for new roles**.
+3. Skips roles it has already processed, then fetches the job page **only for new roles**. Processed roles are stored in a JSON file kept in the GitHub Actions cache, or optionally in DynamoDB.
 4. Scores new roles against your profile with an LLM on **Groq** (JSON mode).
 5. Posts roles scoring 65% or more to **Discord** as embeds.
 
@@ -17,7 +17,7 @@ budapest-job-aggregator/
 │   ├── models.py                   # JobPosting, MatchResult, ScoredJob
 │   ├── ats_crawler.py              # career pages: crawl4ai + LLM link extraction (source "careers")
 │   ├── extractor.py                # base class + NoFluffJobs API / Profession.hu RSS (optional sources)
-│   ├── state.py                    # DynamoDB store (+ local JSON store for testing)
+│   ├── state.py                    # local JSON store (used in CI) + DynamoDB store
 │   ├── ai_scorer.py                # Groq scoring (openai SDK, JSON mode)
 │   ├── discord_notifier.py         # embeds, batching, rate-limit handling
 │   └── main.py                     # orchestration
@@ -34,7 +34,7 @@ budapest-job-aggregator/
 - **State is written only for finished jobs:**
   - Jobs that were delivered to Discord, or that scored below the threshold, are recorded.
   - If a Discord post fails or scoring fails, the job stays new and is retried on the next run.
-- **Records expire after 180 days** through a DynamoDB TTL on `expires_at`, so the table stays inside the free tier.
+- **With DynamoDB, records expire after 180 days** through a TTL on `expires_at`, so the table stays inside the free tier.
 - **Limits:** `MAX_JOBS_PER_RUN` caps LLM usage per run, and `LLM_MIN_SECONDS_BETWEEN_CALLS` spaces calls out to respect free-tier rate limits.
 
 ## Career-page crawling
@@ -98,13 +98,29 @@ If you use Option B, GitHub Actions needs credentials:
 1. Create an IAM role or user allowed to run `dynamodb:BatchGetItem`, `dynamodb:GetItem` and `dynamodb:PutItem` on the table.
 2. Either set up OIDC for it, or replace the `configure-aws-credentials` step with `aws-access-key-id` / `aws-secret-access-key` secrets.
 
+## State without AWS (current workflow setup)
+
+The workflow currently runs without AWS:
+- It uses `STATE_BACKEND=local` and keeps `.state/processed_jobs.json` in the **GitHub Actions cache**.
+- Each run restores the newest saved copy, adds the jobs it scored or alerted, and saves a new copy.
+- The copy is saved even if the run fails partway, so jobs already sent to Discord aren't sent again.
+
+Limits of this setup:
+- GitHub deletes cache entries that go unused for 7 days. If the workflow is paused longer than that, the next run starts with empty state and may re-alert current jobs once.
+- You can see or delete the state under **Actions → Caches** (entries named `job-state-…`). Deleting them resets it.
+
+To move to DynamoDB later:
+1. Run the Terraform in `infra/` and add the `AWS_ROLE_ARN` secret.
+2. In `scraper.yml`, add `id-token: write` under `permissions`, and add an `aws-actions/configure-aws-credentials@v6` step before **Run pipeline**.
+3. Set `STATE_BACKEND: dynamodb`, `DYNAMODB_TABLE: job_scraper_state` and `AWS_REGION`, and remove the two cache steps.
+
 ## GitHub setup
 
 | Kind     | Name                  | Value                                   |
 |----------|-----------------------|-----------------------------------------|
 | Secret   | `GROQ_API_KEY`        | From https://console.groq.com/keys      |
 | Secret   | `DISCORD_WEBHOOK_URL` | Channel → Integrations → Webhooks       |
-| Secret   | `AWS_ROLE_ARN`        | Terraform output                        |
+| Secret   | `AWS_ROLE_ARN`        | Only needed for DynamoDB (Terraform output) |
 | Variable | `AWS_REGION`          | Optional, default `eu-central-1`        |
 | Variable | `GROQ_MODEL`          | Optional, default `openai/gpt-oss-120b` |
 
